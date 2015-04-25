@@ -1,0 +1,167 @@
+<?php
+
+use Ctct\ConstantContact;
+use Ctct\Components\Contacts\Contact;
+use Ctct\Components\Contacts\ContactList;
+use Ctct\Components\Contacts\EmailAddress;
+use Ctct\Exceptions\CtctException;
+use libraries\BlogParser as BlogParser;
+
+class HomeController extends BaseController {
+    /*
+      |--------------------------------------------------------------------------
+      | Default Home Controller
+      |--------------------------------------------------------------------------
+      |
+      | You may wish to use controllers instead of, or in addition to, Closure
+      | based routes. That's great! Here is an example controller method to
+      | get you started. To route to this controller, just add the route:
+      |
+      |	Route::get('/', 'HomeController@showWelcome');
+      |
+     */
+
+    public function showWelcome() {
+        return View::make('hello');
+    }
+
+    public function index() {
+        if (Cache::has('blog_cache_data')) {
+            $blogs_data = Cache::get('blog_cache_data');
+            return View::make('pages.home', array('blogs_data' => $blogs_data));
+        }
+        $simple = @file_get_contents('http://confianzit.com/cit-blog/?feed=rss2');
+        $Parser = new BlogParser();
+        $blogs = $Parser->xml2array($simple, true);
+        $blogs_data = $blogs[0];
+
+        if (strlen(strip_tags($blogs_data['content:encoded'])) > 300) {
+            $blogs_data['content'] = substr(strip_tags($blogs_data['content:encoded']), 0, 300) . "...";
+        } else {
+            $blogs_data['content'] = strip_tags($blogs_data['content:encoded']);
+        }
+        $imageContent = $blogs_data['content:encoded'];
+        preg_match_all('/(<img.*src="(.*)"[^>]*>)/iU', $imageContent, $matches);
+        $quotes_pos = strpos($blogs_data['pubDate'], ':') - 3;
+        $blogs_data['image_content'] = $matches[2][0];
+        $blogs_data['publish_date'] = substr($blogs_data['pubDate'], 0, $quotes_pos);
+        $blogs_data['author'] = $blogs_data['dc:creator'];
+        $blogs_data['blog_url'] = Config::get('constants.blog_url');
+        Cache::add('blog_cache_data', $blogs_data, 30);
+        return View::make('pages.home', array('blogs_data' => $blogs_data));
+    }
+
+    public function newsLetter() {
+
+        $res['status'] = "error";
+        $username = Config::get('constants.ctct_username');
+        $password = Config::get('constants.ctct_password');
+        $API_KEY = Config::get('constants.ctc_api_key');
+        $ACCESS_TOKEN = Config::get('constants.ctc_access_token');
+        $mail_list_id = Config::get('constants.ctct_newsletter_mail_list_id');
+        // Connect to the Contacts URI
+        $cc = new ConstantContact($API_KEY);
+
+        // Create a new Contact Object
+        $contact = new Contact();
+        $lists = $cc->getLists($ACCESS_TOKEN);
+        $response = $cc->getContactByEmail($ACCESS_TOKEN, $_POST['email']);
+        if (empty($response->results)) {
+            $res['status'] = "success";
+            $contact->addEmail($_REQUEST['email']);
+            $contact->addList($mail_list_id);
+            $returnContact = $cc->addContact($ACCESS_TOKEN, $contact, true);
+            $res['message'] = "Subscribed Successfully";
+        } else {
+            $res['message'] = "Already Subscribed";
+        }
+        echo json_encode($res);
+        exit;
+    }
+
+    public function contact_send() {
+
+
+        if (!Request::isMethod('post'))
+            return Redirect::to('/contact-us');
+
+        $data = Input::all();
+
+
+        //Validation rules
+        $rules = array(
+            'name' => 'required',
+            'phone' => 'required',
+            'email' => 'required|email',
+            'comments' => 'required'
+        );
+
+        //Validate data
+        $validator = Validator::make($data, $rules);
+        //    print_r($validator->errors());
+        //die("sss");
+        //If everything is correct than run passes.
+        if ($validator->passes()) {
+
+            $contact_email = Config::get('constants.contact_email');
+            $contact_name = Config::get('constants.contact_name');
+
+            if (!isset($data['lastname'])) {
+                $data['lastname'] = '';
+            }
+            if (!isset($data['company'])) {
+                $data['company'] = '';
+            }
+            if (!isset($data['website'])) {
+                $data['website'] = '';
+            }
+
+            $data['toemail'] = $contact_email;
+            $data['toname'] = $contact_name;
+            $data['date'] = date("F j, Y, g:i a");
+            $data['client_ip'] = Request::getClientIp();
+            Mail::send('emails.contact', $data, function($message) use ($data) {
+
+                $message->from($data['email'], $data['name']);
+
+                $message->to($data['toemail'], $data['toname'])->subject('contact request');
+            });
+
+            Session::flash('smessage', 'Thank you for contacting us. We will be in touch with you soon ');
+           
+            //enable if needed - will redirect to home page if they fill enquiery form
+            //if (!empty($_POST['enq_from'])) {
+           //     return Redirect::to('/');
+           // }
+            return Redirect::to('/contact-us');
+        } else {
+
+            return Redirect::back()->withErrors($validator)->withInput(Input::all());
+        }
+    }
+    public function siteMap() 
+    {
+	    $routeCollection = Route::getRoutes();
+    	// create new sitemap object
+	    $sitemap = App::make("sitemap");
+	    //declare array to exclude items from sitemap
+		$excludeItems = array('odoo-trial/mailVerification/{code}','odoo-trial/linkExpired','odoo-trial/setup/{code}','web','mobile','odoo','sitemap');
+	    // check if there is cached sitemap and build new only if is not
+	    if (!$sitemap->isCached()) {
+	    	foreach ($routeCollection as $value) {
+	    		$link = $value->getPath();
+	    		//$name = $value->getName();
+	    		$req_method = $value->getMethods();
+	    		if(isset($req_method[0]) && $req_method[0] == 'GET'){
+	    			//check if '$excludeItems' array contains the current item.
+		    		if(!in_array($link ,$excludeItems)){
+		    			// add item to the sitemap (url, date, priority, freq)
+		        		$sitemap->add(URL::to($link), date('Y-m-d'), '1.0', 'daily');
+		    		}
+	    		}
+	         }
+	    }
+	    // generate your sitemap (options: 'xml' (default), 'html', 'txt', 'ror-rss', 'ror-rdf')
+	    return $sitemap->store('xml');
+	}
+}
